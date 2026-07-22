@@ -453,12 +453,16 @@ ApplicationWindow {
             if (parsed.error) {
                 console.log("Invalid Monero URI: " + parsed.error);
             } else {
-                middlePanel.transferView.sendTo(
-                    parsed.address || "",
-                    parsed.payment_id || "",
-                    parsed.tx_description || "",
-                    parsed.amount || ""
-                );
+                if (parsed.recipients && parsed.recipients.length > 0) {
+                    middlePanel.transferView.sendToParsed(parsed);
+                } else {
+                    middlePanel.transferView.sendTo(
+                        parsed.address || "",
+                        parsed.payment_id || "",
+                        parsed.tx_description || "",
+                        parsed.amount || ""
+                    );
+                }
 
                 appWindow.raise();
                 appWindow.show();
@@ -1468,7 +1472,7 @@ ApplicationWindow {
         property bool   miningIgnoreBattery : true
         property int    miningModeSelected: 0
         property int    chainDropdownSelected: 0
-        property var    nettype: NetworkType.MAINNET
+        property var    nettype: NetworkType.TESTNET
         property int    restore_height : 0
         property bool   is_trusted_daemon : false  // TODO: drop after v0.17.2.0 release
         property bool   is_recovering : false
@@ -1485,7 +1489,7 @@ ApplicationWindow {
         property bool historyShowAdvanced: false
         property bool historyHumanDates: true
         property string blockchainDataDir: ""
-        property bool useRemoteNode: isAndroid
+        property bool useRemoteNode: true
         property string remoteNodeAddress: "" // TODO: drop after v0.17.2.0 release
         property string remoteNodesSerialized: JSON.stringify({
                 selected: 0,
@@ -1496,7 +1500,12 @@ ApplicationWindow {
                         password: daemonPassword,
                         trusted: is_trusted_daemon,
                     }]
-                    : [],
+                    : [{
+                        address: "127.0.0.1:28081",
+                        username: "",
+                        password: "",
+                        trusted: true,
+                    }],
             })
         property string bootstrapNodeAddress: ""
         property bool segregatePreForkOutputs: true

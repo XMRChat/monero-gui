@@ -119,6 +119,51 @@ Rectangle {
       confirmationDialog.open()
     }
 
+    function parsedRecipients(parsed) {
+        if (parsed && parsed.recipients && parsed.recipients.length > 0) {
+            return parsed.recipients;
+        }
+        if (parsed && parsed.extra_parameters && parsed.extra_parameters.recipients && parsed.extra_parameters.recipients.length > 0) {
+            return parsed.extra_parameters.recipients;
+        }
+        return null;
+    }
+
+    function descriptionFromRecipients(recipients, tx_description, recipient_name) {
+        if (tx_description) {
+            return tx_description;
+        }
+        if (recipient_name) {
+            return recipient_name;
+        }
+
+        var names = [];
+        for (var index = 0; index < recipients.length; ++index) {
+            if (recipients[index].recipient_name) {
+                names.push(recipients[index].recipient_name);
+            }
+        }
+        return names.join("; ");
+    }
+
+    function fillPaymentRecipients(recipients, payment_id, tx_description, recipient_name) {
+        recipientModel.clear();
+
+        const count = Math.min(recipients.length, recipientModel.maxRecipients);
+        for (var index = 0; index < count; ++index) {
+            recipientModel.newRecipient(recipients[index].address || "", Utils.removeTrailingZeros(recipients[index].amount || ""));
+        }
+        if (recipientModel.count === 0) {
+            recipientModel.newRecipient("", "");
+        }
+        if (recipients.length > recipientModel.maxRecipients) {
+            appWindow.showStatusMessage(qsTr("QR code has more recipients than this wallet supports; only the first %1 were loaded.").arg(recipientModel.maxRecipients) + translationManager.emptyString, 5);
+        }
+
+        setPaymentId(payment_id || "");
+        setDescription(descriptionFromRecipients(recipients, tx_description, recipient_name));
+    }
+
     function fillPaymentDetails(address, payment_id, amount, tx_description, recipient_name) {
         if (recipientModel.count > 0) {
             const last = recipientModel.count - 1;
@@ -132,9 +177,25 @@ Rectangle {
         setDescription((recipient_name ? recipient_name + (tx_description ? " (" + tx_description + ")" : "") : (tx_description || "")));
     }
 
-    function updateFromQrCode(address, payment_id, amount, tx_description, recipient_name) {
+    function fillPaymentObject(parsed) {
+        const recipients = parsedRecipients(parsed);
+        if (recipients) {
+            fillPaymentRecipients(recipients, parsed.payment_id || "", parsed.tx_description || "", parsed.recipient_name || "");
+        } else {
+            fillPaymentDetails(parsed.address || "", parsed.payment_id || "", parsed.amount || "", parsed.tx_description || "", parsed.recipient_name || "");
+        }
+    }
+
+    function updateFromQrCode(address, payment_id, amount, tx_description, recipient_name, extra_parameters) {
         console.log("updateFromQrCode")
-        fillPaymentDetails(address, payment_id, amount, tx_description, recipient_name);
+        fillPaymentObject({
+            address: address,
+            payment_id: payment_id,
+            amount: amount,
+            tx_description: tx_description,
+            recipient_name: recipient_name,
+            extra_parameters: extra_parameters
+        });
         cameraUi.qrcode_decoded.disconnect(updateFromQrCode)
     }
 
@@ -310,7 +371,7 @@ Rectangle {
                                 for (var index = 0; index < codes.length; ++index) {
                                     const parsed = walletManager.parse_uri_to_object(codes[index]);
                                     if (!parsed.error) {
-                                        fillPaymentDetails(parsed.address, parsed.payment_id, parsed.amount, parsed.tx_description, parsed.recipient_name);
+                                        fillPaymentObject(parsed);
                                         break;
                                     } else if (walletManager.addressValid(codes[index], appWindow.persistentSettings.nettype)) {
                                         fillPaymentDetails(codes[index]);
@@ -431,7 +492,7 @@ Rectangle {
                                 onTextChanged: {
                                     const parsed = walletManager.parse_uri_to_object(text);
                                     if (!parsed.error) {
-                                        fillPaymentDetails(parsed.address, parsed.payment_id, parsed.amount, parsed.tx_description, parsed.recipient_name);
+                                        fillPaymentObject(parsed);
                                     }
                                     address = text;
                                 }
@@ -1221,5 +1282,11 @@ Rectangle {
         middlePanel.state = 'Transfer';
 
         fillPaymentDetails(address, paymentId, amount, description);
+    }
+
+    function sendToParsed(parsed) {
+        middlePanel.state = 'Transfer';
+
+        fillPaymentObject(parsed);
     }
 }

@@ -38,13 +38,140 @@
 #include <QDir>
 #include <QDebug>
 #include <QUrl>
+#include <QUrlQuery>
 #include <QtConcurrent/QtConcurrent>
 #include <QMutex>
 #include <QMutexLocker>
 #include <QString>
+#include <QStringList>
+#include <QVariantList>
 
 #include "qt/updater.h"
 #include "qt/ScopeGuard.h"
+
+namespace
+{
+
+QString networkTypeName(NetworkType::Type nettype)
+{
+    if (nettype == NetworkType::TESTNET)
+        return QStringLiteral("testnet");
+    if (nettype == NetworkType::STAGENET)
+        return QStringLiteral("stagenet");
+    return QStringLiteral("mainnet");
+}
+
+NetworkType::Type inferNetworkType(const QString &address)
+{
+    if (Monero::Wallet::addressValid(address.toStdString(), Monero::TESTNET))
+        return NetworkType::TESTNET;
+    if (Monero::Wallet::addressValid(address.toStdString(), Monero::STAGENET))
+        return NetworkType::STAGENET;
+    return NetworkType::MAINNET;
+}
+
+bool addressValidAnyNetwork(const QString &address)
+{
+    return Monero::Wallet::addressValid(address.toStdString(), Monero::MAINNET)
+        || Monero::Wallet::addressValid(address.toStdString(), Monero::TESTNET)
+        || Monero::Wallet::addressValid(address.toStdString(), Monero::STAGENET);
+}
+
+QString uriDecode(const QString &value)
+{
+    return QUrl::fromPercentEncoding(value.toUtf8());
+}
+
+QStringList splitUriList(const QString &value)
+{
+    if (value.isEmpty()) {
+        return {};
+    }
+
+    QStringList decoded;
+    for (const QString &item : value.split(QLatin1Char(';'))) {
+        decoded.append(uriDecode(item));
+    }
+    return decoded;
+}
+
+QVariantMap parseMoneroTransferUriToObject(const QString &uri, QString &error)
+{
+    QVariantMap result;
+    QString normalizedUri = uri;
+    if (normalizedUri.startsWith(QStringLiteral("monero://"))) {
+        normalizedUri.replace(0, 9, QStringLiteral("monero:"));
+    }
+
+    if (!normalizedUri.startsWith(QStringLiteral("monero:"))) {
+        error = QObject::tr("URI is not a Monero transfer URI");
+        return result;
+    }
+
+    const QString body = normalizedUri.mid(QStringLiteral("monero:").size());
+    const int fragmentIndex = body.indexOf(QLatin1Char('#'));
+    const QString bodyWithoutFragment = fragmentIndex >= 0 ? body.left(fragmentIndex) : body;
+    const int queryIndex = bodyWithoutFragment.indexOf(QLatin1Char('?'));
+
+    const QString addressPart = queryIndex >= 0 ? bodyWithoutFragment.left(queryIndex) : bodyWithoutFragment;
+    const QString queryPart = queryIndex >= 0 ? bodyWithoutFragment.mid(queryIndex + 1) : QString();
+
+    const QStringList addresses = splitUriList(addressPart);
+    if (addresses.isEmpty()) {
+        error = QObject::tr("Monero URI is missing an address");
+        return result;
+    }
+
+    for (const QString &address : addresses) {
+        if (address.isEmpty()) {
+            error = QObject::tr("Monero URI contains an empty address");
+            return result;
+        }
+        if (!addressValidAnyNetwork(address)) {
+            error = QObject::tr("Monero URI contains an invalid address");
+            return result;
+        }
+    }
+
+    const QUrlQuery query(queryPart);
+    const QStringList amounts = splitUriList(query.queryItemValue(QStringLiteral("tx_amount")));
+    const QStringList recipientNames = splitUriList(query.queryItemValue(QStringLiteral("recipient_name")));
+    const QString txDescription = query.queryItemValue(QStringLiteral("tx_description"));
+
+    if (addresses.size() > 1 && !amounts.isEmpty() && amounts.size() != addresses.size()) {
+        error = QObject::tr("Monero URI must provide one tx_amount per address");
+        return result;
+    }
+    if (!recipientNames.isEmpty() && recipientNames.size() != 1 && recipientNames.size() != addresses.size()) {
+        error = QObject::tr("Monero URI must provide one recipient_name or one recipient_name per address");
+        return result;
+    }
+
+    QVariantList recipients;
+    for (int index = 0; index < addresses.size(); ++index) {
+        QVariantMap recipient;
+        recipient.insert(QStringLiteral("address"), addresses.at(index));
+        recipient.insert(QStringLiteral("amount"), amounts.size() > index ? amounts.at(index) : QString());
+        recipient.insert(QStringLiteral("recipient_name"),
+            recipientNames.size() == addresses.size() ? recipientNames.at(index) :
+            recipientNames.size() == 1 ? recipientNames.at(0) : QString());
+        recipients.append(recipient);
+    }
+
+    result.insert(QStringLiteral("address"), addresses.first());
+    result.insert(QStringLiteral("payment_id"), QString());
+    result.insert(QStringLiteral("amount"), amounts.isEmpty() ? QString() : amounts.first());
+    result.insert(QStringLiteral("tx_description"), txDescription);
+    result.insert(QStringLiteral("recipient_name"), recipientNames.isEmpty() ? QString() : recipientNames.first());
+    result.insert(QStringLiteral("recipients"), recipients);
+
+    QVariantMap extraParameters;
+    extraParameters.insert(QStringLiteral("recipients"), recipients);
+    result.insert(QStringLiteral("extra_parameters"), extraParameters);
+    return result;
+}
+
+} // namespace
 
 class WalletPassphraseListenerImpl : public  Monero::WalletListener, public PassphraseReceiver
 {
@@ -95,6 +222,8 @@ Wallet *WalletManager::createWallet(const QString &path, const QString &password
         qDebug() << "Closing open m_currentWallet" << m_currentWallet;
         delete m_currentWallet;
     }
+    if (nettype == NetworkType::TESTNET)
+        m_pimpl->setDaemonAddress("127.0.0.1:28081");
     Monero::Wallet * w = m_pimpl->createWallet(path.toStdString(), password.toStdString(),
                                                   language.toStdString(), static_cast<Monero::NetworkType>(nettype), kdfRounds);
     m_currentWallet  = new Wallet(w);
@@ -414,6 +543,65 @@ QVariantMap WalletManager::parse_uri_to_object(const QString &uri) const
     QString error;
 
     QVariantMap result;
+    const QUrl walletUri(uri);
+    if (walletUri.scheme() == QStringLiteral("monero_wallet")) {
+        address = walletUri.path();
+        const QUrlQuery query(walletUri);
+        const QString viewKey = query.queryItemValue(QStringLiteral("secret_view_key")).isEmpty()
+            ? query.queryItemValue(QStringLiteral("view_key"))
+            : query.queryItemValue(QStringLiteral("secret_view_key"));
+        const QString spendKey = query.queryItemValue(QStringLiteral("secret_spend_key")).isEmpty()
+            ? query.queryItemValue(QStringLiteral("spend_key"))
+            : query.queryItemValue(QStringLiteral("secret_spend_key"));
+        const QString restoreHeight = query.queryItemValue(QStringLiteral("restore_height")).isEmpty()
+            ? query.queryItemValue(QStringLiteral("height"))
+            : query.queryItemValue(QStringLiteral("restore_height"));
+        QString nettype = query.queryItemValue(QStringLiteral("nettype")).toLower();
+
+        if (address.isEmpty()) {
+            result.insert("error", tr("Wallet QR code is missing an address"));
+            return result;
+        }
+        if (nettype.isEmpty()) {
+            nettype = networkTypeName(inferNetworkType(address));
+        }
+
+        result.insert("address", address);
+        result.insert("payment_id", payment_id);
+        result.insert("amount", "");
+        result.insert("tx_description", tx_description);
+        result.insert("recipient_name", recipient_name);
+
+        QVariantMap extra_parameters;
+        extra_parameters.insert("secret_view_key", viewKey);
+        extra_parameters.insert("secret_spend_key", spendKey);
+        extra_parameters.insert("restore_height", restoreHeight);
+        extra_parameters.insert("nettype", nettype);
+        result.insert("extra_parameters", extra_parameters);
+        return result;
+    }
+
+    if (uri.startsWith(QStringLiteral("monero:")) || uri.startsWith(QStringLiteral("monero://"))) {
+        const QString normalizedUri = QString(uri).replace(QStringLiteral("monero://"), QStringLiteral("monero:"));
+        const QString body = normalizedUri.mid(QStringLiteral("monero:").size());
+        const int queryIndex = body.indexOf(QLatin1Char('?'));
+        const QString addressPart = queryIndex >= 0 ? body.left(queryIndex) : body;
+        const QString queryPart = queryIndex >= 0 ? body.mid(queryIndex + 1) : QString();
+        const QUrlQuery query(queryPart);
+        const bool multiRecipientUri = addressPart.contains(QLatin1Char(';'))
+            || query.queryItemValue(QStringLiteral("tx_amount")).contains(QLatin1Char(';'))
+            || query.queryItemValue(QStringLiteral("recipient_name")).contains(QLatin1Char(';'));
+
+        if (multiRecipientUri) {
+            QString transferUriError;
+            result = parseMoneroTransferUriToObject(uri, transferUriError);
+            if (result.isEmpty()) {
+                result.insert("error", !transferUriError.isEmpty() ? transferUriError : tr("Unknown error"));
+            }
+            return result;
+        }
+    }
+
     if (this->parse_uri(uri, address, payment_id, amount, tx_description, recipient_name, unknown_parameters, error)) {
         result.insert("address", address);
         result.insert("payment_id", payment_id);
@@ -435,7 +623,15 @@ QVariantMap WalletManager::parse_uri_to_object(const QString &uri) const
         }
         result.insert("extra_parameters", extra_parameters);
     } else {
-        result.insert("error", !error.isEmpty() ? error : tr("Unknown error"));
+        if (uri.startsWith(QStringLiteral("monero:")) || uri.startsWith(QStringLiteral("monero://"))) {
+            QString transferUriError;
+            result = parseMoneroTransferUriToObject(uri, transferUriError);
+            if (result.isEmpty()) {
+                result.insert("error", !transferUriError.isEmpty() ? transferUriError : (!error.isEmpty() ? error : tr("Unknown error")));
+            }
+        } else {
+            result.insert("error", !error.isEmpty() ? error : tr("Unknown error"));
+        }
     }
 
     return result;
