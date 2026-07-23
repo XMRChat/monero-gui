@@ -88,9 +88,10 @@ QStringList splitUriList(const QString &value)
         return {};
     }
 
+    const QString decodedValue = uriDecode(value);
     QStringList decoded;
-    for (const QString &item : value.split(QLatin1Char(';'))) {
-        decoded.append(uriDecode(item));
+    for (const QString &item : decodedValue.split(QLatin1Char(';'))) {
+        decoded.append(item);
     }
     return decoded;
 }
@@ -588,9 +589,11 @@ QVariantMap WalletManager::parse_uri_to_object(const QString &uri) const
         const QString addressPart = queryIndex >= 0 ? body.left(queryIndex) : body;
         const QString queryPart = queryIndex >= 0 ? body.mid(queryIndex + 1) : QString();
         const QUrlQuery query(queryPart);
+        const QStringList amounts = splitUriList(query.queryItemValue(QStringLiteral("tx_amount")));
+        const QStringList recipientNames = splitUriList(query.queryItemValue(QStringLiteral("recipient_name")));
         const bool multiRecipientUri = addressPart.contains(QLatin1Char(';'))
-            || query.queryItemValue(QStringLiteral("tx_amount")).contains(QLatin1Char(';'))
-            || query.queryItemValue(QStringLiteral("recipient_name")).contains(QLatin1Char(';'));
+            || amounts.size() > 1
+            || recipientNames.size() > 1;
 
         if (multiRecipientUri) {
             QString transferUriError;
