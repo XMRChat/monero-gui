@@ -1,6 +1,7 @@
 name: ci/gh-actions/gui
 
-on: [push, pull_request]
+on:
+  workflow_dispatch:
 
 env:
   FREE_DISKSPACE: |

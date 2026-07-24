@@ -1,0 +1,61 @@
+name: testnet/ubuntu-tarball
+
+on:
+  push:
+    tags:
+      - "testnet-ubuntu-v*"
+
+env:
+  FREE_DISKSPACE: |
+    sudo rm -rf /usr/local/.ghcup /usr/share/dotnet /usr/share/swift /usr/share/miniconda
+
+jobs:
+  ubuntu-testnet-tarball:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install runtime test dependencies
+        run: sudo apt-get update && sudo apt-get install -y xvfb libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-xkb1 libxcb-shape0 libxkbcommon-x11-0
+
+      - name: Free disk space
+        run: ${{ env.FREE_DISKSPACE }}
+
+      - name: Prepare build container
+        run: docker build --tag monero-gui-testnet-build --build-arg THREADS=3 --file Dockerfile.linux .
+
+      - name: Build static Ubuntu binaries
+        run: docker run --rm -e CMAKE_BUILD_PARALLEL_LEVEL=1 -v "${GITHUB_WORKSPACE}:/monero-gui" -w /monero-gui monero-gui-testnet-build sh -c 'git config --global --add safe.directory /monero-gui && git config --global --add safe.directory /monero-gui/monero && scripts/sync-testnet-monero.sh && make release-static MANUAL_SUBMODULES=ON'
+
+      - name: Smoke test QML
+        run: xvfb-run -a build/release/bin/monero-wallet-gui --test-qml
+
+      - name: Package tarball
+        id: package
+        run: |
+          version="${GITHUB_REF_NAME:-manual}"
+          if [ "${GITHUB_REF_TYPE:-}" != "tag" ]; then
+            version="$(git rev-parse --short HEAD)"
+          fi
+          tarball="$(scripts/package-testnet-ubuntu.sh build/release/bin "${version}" dist)"
+          echo "tarball=${tarball}" >> "${GITHUB_OUTPUT}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: monero-gui-testnet-ubuntu-x86_64
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+
+      - name: Publish GitHub release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/*.tar.gz dist/*.sha256 \
+            --title "Monero GUI Testnet ${GITHUB_REF_NAME}" \
+            --notes "Ubuntu x86_64 testnet-only Monero GUI tarball. Extract it and run ./start-testnet.sh."

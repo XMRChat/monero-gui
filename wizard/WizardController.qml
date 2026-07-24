@@ -35,6 +35,7 @@ import QtQuick.Controls.Styles 1.4
 import QtQuick.Layouts 1.2
 import QtQuick.Dialogs 1.2
 import moneroComponents.Wallet 1.0
+import moneroComponents.NetworkType 1.0
 
 import "../js/Wizard.js" as Wizard
 import "../js/Windows.js" as Windows
@@ -323,7 +324,7 @@ Rectangle {
 
         onAccepted: {
             var keysPath = walletManager.urlToLocalPath(fileDialog.fileUrl)
-            persistentSettings.nettype = oshelper.getNetworkTypeFromFile(keysPath);
+            persistentSettings.nettype = NetworkType.TESTNET;
             wizardController.openWalletFile(keysPath);
         }
         onRejected: {

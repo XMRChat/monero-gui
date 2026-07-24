@@ -1,6 +1,6 @@
 [submodule "monero"]
 	path = monero
-	url = git@github.com:XMRChat/monero.git
+	url = https://github.com/XMRChat/monero.git
 	ignore = all
 [submodule "external/quirc"]
 	path = external/quirc

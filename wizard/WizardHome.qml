@@ -183,9 +183,7 @@ Rectangle {
 
             ListModel {
                 id: networkTypeModel
-                ListElement {column1: "Mainnet"; column2: ""; nettype: "mainnet"}
                 ListElement {column1: "Testnet"; column2: ""; nettype: "testnet"}
-                ListElement {column1: "Stagenet"; column2: ""; nettype: "stagenet"}
             }
 
             GridLayout {
@@ -197,23 +195,17 @@ Rectangle {
 
                 MoneroComponents.StandardDropdown {
                     id: networkTypeDropdown
-                    currentIndex: persistentSettings.nettype
+                    currentIndex: 0
                     dataModel: networkTypeModel
                     Layout.maximumWidth: 180
                     labelText: qsTr("Network") + ":" + translationManager.emptyString
                     labelFontSize: 14
+                    enabled: false
 
                     onChanged: {
-                        var item = dataModel.get(currentIndex).nettype.toLowerCase();
-                        if(item === "mainnet") {
-                            persistentSettings.nettype = NetworkType.MAINNET
-                        } else if(item === "stagenet"){
-                            persistentSettings.nettype = NetworkType.STAGENET
-                        } else if(item === "testnet"){
-                            persistentSettings.nettype = NetworkType.TESTNET
-                        }
+                        persistentSettings.nettype = NetworkType.TESTNET
                         appWindow.disconnectRemoteNode()
-                        networkTypeDropdown.currentIndex = Qt.binding(function() { return persistentSettings.nettype });
+                        networkTypeDropdown.currentIndex = 0
                         persistentSettings.wallet_path = ""
                     }
                 }

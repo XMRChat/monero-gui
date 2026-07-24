@@ -56,7 +56,7 @@ import "version.js" as Version
 ApplicationWindow {
     id: appWindow
     signal gracefulShutdownComplete()
-    title: "Monero" +
+    title: "Monero Testnet" +
         (persistentSettings.displayWalletNameInTitleBar && walletName
         ? " - " + walletName
         : "")
@@ -102,6 +102,7 @@ ApplicationWindow {
     property bool themeTransition: false
     property int backgroundSyncType: Wallet.BackgroundSync_Off;
     property bool isQuitting: false
+    readonly property bool testnetOnlyBuild: true
 
     // fiat price conversion
     property real fiatPrice: 0
@@ -347,8 +348,20 @@ ApplicationWindow {
         viewOnly = currentWallet.viewOnly;
         backgroundSyncType = currentWallet.getBackgroundSyncType();
 
+        if(testnetOnlyBuild && currentWallet.nettype != NetworkType.TESTNET) {
+            walletManager.closeWallet();
+            currentWallet = undefined;
+            persistentSettings.wallet_path = "";
+            persistentSettings.nettype = NetworkType.TESTNET;
+            informationPopup.title = qsTr("Testnet only") + translationManager.emptyString;
+            informationPopup.text = qsTr("This build only opens Monero testnet wallets.") + translationManager.emptyString;
+            informationPopup.open();
+            showWizard();
+            return;
+        }
+
         // New wallets saves the testnet flag in keys file.
-        if(persistentSettings.nettype != currentWallet.nettype) {
+        if(!testnetOnlyBuild && persistentSettings.nettype != currentWallet.nettype) {
             console.log("Using network type from keys file")
             persistentSettings.nettype = currentWallet.nettype;
         }
@@ -1378,6 +1391,12 @@ ApplicationWindow {
     }
 
     Component.onCompleted: {
+        if (testnetOnlyBuild) {
+            persistentSettings.nettype = NetworkType.TESTNET;
+            persistentSettings.walletMode = 2;
+            persistentSettings.useRemoteNode = false;
+        }
+
         if (screenAvailableWidth > width) {
             x = (screenAvailableWidth - width) / 2;
         }
