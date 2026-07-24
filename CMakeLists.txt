@@ -16,8 +16,6 @@ option(WITH_DESKTOP_ENTRY "Ask to install desktop entry on first startup" ON)
 option(WITH_UPDATER "Regularly check for new updates" ON)
 option(DEV_MODE "Checkout latest monero master on build" OFF)
 
-# The FCMP testnet core branch uses C++17 library traits while still being
-# built with DEV_MODE=OFF to avoid checking out origin/master.
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
