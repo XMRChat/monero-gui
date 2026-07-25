@@ -5,7 +5,7 @@ build_dir=${1:-build/release/bin}
 version=${2:-local}
 out_dir=${3:-dist}
 
-package_name="monero-gui-testnet-ubuntu-x86_64-${version}"
+package_name="monero-gui-${version}-linux-x86_64"
 stage="${out_dir}/${package_name}"
 
 if [ ! -x "${build_dir}/monero-wallet-gui" ]; then
