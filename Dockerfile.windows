@@ -71,3 +71,19 @@ RUN git clone -b libgcrypt-1.8.5 --depth 1 https://github.com/gpg/libgcrypt && \
     make -j$THREADS install && \
     cd .. && \
     rm -rf libgcrypt
+
+# Rust toolchain for the fcmp++ static library that monero builds with
+# `cargo build --target x86_64-pc-windows-gnu`. This image runs on a Linux host
+# and cross-compiles to the mingw target, so install the Linux-host stable
+# toolchain via rustup and add the windows-gnu std target (the standalone
+# rust-*-x86_64-unknown-linux-gnu tarball used by Dockerfile.linux does not
+# ship the windows-gnu std component). Version is pinned to 1.85.0 to match
+# Dockerfile.linux.
+ENV RUSTUP_HOME=/opt/rust \
+    CARGO_HOME=/opt/rust \
+    PATH="/opt/rust/bin:${PATH}"
+RUN curl -fsSLo rustup-init.sh https://sh.rustup.rs && \
+    sh rustup-init.sh -y --default-toolchain 1.85.0 --profile minimal --no-modify-path && \
+    rm -f rustup-init.sh && \
+    rustup target add x86_64-pc-windows-gnu && \
+    chmod -R a+rX /opt/rust
