@@ -1,11 +1,11 @@
-FROM ubuntu:20.04
+FROM docker.io/library/ubuntu:20.04
 
 ARG THREADS=1
 ARG QT_VERSION=v5.15.19-lts-lgpl
 ENV SOURCE_DATE_EPOCH=1397818193
 
-RUN apt update && \
-    DEBIAN_FRONTEND=noninteractive apt install -y build-essential cmake g++-mingw-w64 gettext git libtool ninja-build pkg-config \
+RUN apt -o APT::Cache-Start=251658240 update && \
+    DEBIAN_FRONTEND=noninteractive apt -o APT::Cache-Start=251658240 install -y build-essential cmake g++-mingw-w64 gettext git libtool ninja-build pkg-config \
     python && \
     rm -rf /var/lib/apt/lists/*
 
@@ -73,12 +73,10 @@ RUN git clone -b libgcrypt-1.8.5 --depth 1 https://github.com/gpg/libgcrypt && \
     rm -rf libgcrypt
 
 # Rust toolchain for the fcmp++ static library that monero builds with
-# `cargo build --target x86_64-pc-windows-gnu`. This image runs on a Linux host
-# and cross-compiles to the mingw target, so install the Linux-host stable
-# toolchain via rustup and add the windows-gnu std target (the standalone
-# rust-*-x86_64-unknown-linux-gnu tarball used by Dockerfile.linux does not
-# ship the windows-gnu std component). Version is pinned to 1.85.0 to match
-# Dockerfile.linux.
+# `cargo build --target x86_64-pc-windows-gnu`. Install the pinned Linux-host
+# compiler and windows-gnu std component directly from Rust dist archives. This
+# avoids rustup's /proc/self/exe dependency, which breaks when this Linux image
+# is built under Podman on FreeBSD.
 #
 # CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: fcmp_pp_rust is a staticlib, so
 # cargo must link it (staticlib still links the bundled std/runtime). With no
@@ -87,12 +85,19 @@ RUN git clone -b libgcrypt-1.8.5 --depth 1 https://github.com/gpg/libgcrypt && \
 # failed, exit code 1". Bind it to the mingw cross-compiler already installed
 # by g++-mingw-w64 (the posix variant selected above). This is cargo's
 # documented CARGO_TARGET_<triple>_LINKER convention; no .cargo/config needed.
-ENV RUSTUP_HOME=/opt/rust \
-    CARGO_HOME=/opt/rust \
+ARG RUST_VERSION=1.85.0
+ENV CARGO_HOME=/opt/rust \
     CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc \
     PATH="/opt/rust/bin:${PATH}"
-RUN curl -fsSLo rustup-init.sh https://sh.rustup.rs && \
-    sh rustup-init.sh -y --default-toolchain 1.85.0 --profile minimal --no-modify-path && \
-    rm -f rustup-init.sh && \
-    rustup target add x86_64-pc-windows-gnu && \
+RUN apt -o APT::Cache-Start=251658240 update && \
+    DEBIAN_FRONTEND=noninteractive apt -o APT::Cache-Start=251658240 install -y xz-utils && \
+    rm -rf /var/lib/apt/lists/* && \
+    curl -fsSLO https://static.rust-lang.org/dist/rust-${RUST_VERSION}-x86_64-unknown-linux-gnu.tar.xz && \
+    tar -xf rust-${RUST_VERSION}-x86_64-unknown-linux-gnu.tar.xz && \
+    ./rust-${RUST_VERSION}-x86_64-unknown-linux-gnu/install.sh --prefix=/opt/rust --disable-ldconfig && \
+    rm -rf rust-${RUST_VERSION}-x86_64-unknown-linux-gnu rust-${RUST_VERSION}-x86_64-unknown-linux-gnu.tar.xz && \
+    curl -fsSLO https://static.rust-lang.org/dist/rust-std-${RUST_VERSION}-x86_64-pc-windows-gnu.tar.xz && \
+    tar -xf rust-std-${RUST_VERSION}-x86_64-pc-windows-gnu.tar.xz && \
+    ./rust-std-${RUST_VERSION}-x86_64-pc-windows-gnu/install.sh --prefix=/opt/rust --disable-ldconfig && \
+    rm -rf rust-std-${RUST_VERSION}-x86_64-pc-windows-gnu rust-std-${RUST_VERSION}-x86_64-pc-windows-gnu.tar.xz && \
     chmod -R a+rX /opt/rust
