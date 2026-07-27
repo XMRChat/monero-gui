@@ -262,6 +262,17 @@ int main(int argc, char *argv[])
         return 1;
     }
     moneroAccountsDir = QDir::toNativeSeparators(moneroAccountsDir);
+    // Ensure the default accounts directory exists before QML reads it.
+    // Without this, WizardWalletInput verifies the default path for existence
+    // and writability like any user-entered path, and rejects it as
+    // "does not exist or is not writable" — surfacing as a broken default
+    // wallet path on first run. Fall back to the home directory if it cannot
+    // be created (e.g. read-only documents folder).
+    if (!QDir().mkpath(moneroAccountsDir)) {
+        qWarning() << "Could not create accounts directory" << moneroAccountsDir
+                   << "- falling back to home directory";
+        moneroAccountsDir = QDir::toNativeSeparators(QDir::homePath());
+    }
 
 #if defined(Q_OS_LINUX)
     if (isDesktop) app.setWindowIcon(QIcon(":/images/appicon.ico"));
