@@ -55,6 +55,15 @@ if(NOT MANUAL_SUBMODULES)
   endif()
 endif()
 
+# monero's mx25519 external declares its API as __declspec(dllimport) on Windows
+# unless MX25519_STATIC is defined. monero/CMakeLists.txt only defines it when
+# monero's own STATIC option is ON, but the GUI builds monero with STATIC=OFF
+# (release-win64) against MSYS2's shared Qt. Without this, carrot_core compiles
+# references to __imp_mx25519_* import symbols that don't exist in the static
+# libmx25519.a it links, breaking the monerod.exe link. Define it globally here
+# so the mx25519 header resolves to plain symbols under both STATIC=ON and OFF.
+add_definitions(-DMX25519_STATIC)
+
 add_subdirectory(monero)
 add_subdirectory(external)
 
