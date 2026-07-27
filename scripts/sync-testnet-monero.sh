@@ -2,8 +2,8 @@
 set -eu
 
 remote=${MONERO_TESTNET_REMOTE:-https://github.com/XMRChat/monero.git}
-ref=${MONERO_TESTNET_REF:-win-testnet-mutex-fix}
-commit=${MONERO_TESTNET_COMMIT:-df7b969435058ed7d27dca26592430303057129f}
+ref=${MONERO_TESTNET_REF:-win-testnet-mutex-fix-2}
+commit=${MONERO_TESTNET_COMMIT:-d348e85548589961d988e94ac06eff79795b1aa7}
 repo_root="$(pwd)"
 
 register_safe_dir() {
