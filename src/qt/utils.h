@@ -42,7 +42,7 @@ QString getAccountName();
 QString xdgMime();
 void registerXdgMime();
 #endif
-const static QRegularExpression reURI = QRegularExpression("^\\w+:\\/\\/([\\w+\\-?\\-_\\-=\\-&]+)");
+const static QRegularExpression reURI = QRegularExpression("^[A-Za-z][A-Za-z0-9+.-]*:\\S+");
 QString randomUserAgent();
 
 #endif // UTILS_H
