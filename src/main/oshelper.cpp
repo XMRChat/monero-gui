@@ -28,6 +28,7 @@
 
 #include "oshelper.h"
 
+#include <algorithm>
 #include <unordered_set>
 
 #include <QCoreApplication>
@@ -49,6 +50,16 @@
 #include "qt/macoshelper.h"
 #endif
 #ifdef Q_OS_WIN
+#include <QBackingStore>
+#include <QColor>
+#include <QEventLoop>
+#include <QExposeEvent>
+#include <QKeyEvent>
+#include <QMouseEvent>
+#include <QPainter>
+#include <QPen>
+#include <QPixmap>
+#include <QRegion>
 #include <shlobj.h>
 #include <windows.h>
 #endif
@@ -94,6 +105,21 @@ void showWindows(const std::unordered_set<QWindow *> &windows)
     }
 }
 
+QList<QString> decodeQrCodes(const QImage &image)
+{
+    QList<QString> codes;
+    if (image.isNull())
+    {
+        return codes;
+    }
+
+    const std::vector<std::string> decoded = QrDecoder().decode(image);
+    std::for_each(decoded.begin(), decoded.end(), [&codes](const std::string &code) {
+        codes.push_back(QString::fromStdString(code));
+    });
+    return codes;
+}
+
 #if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
 bool isWayland()
 {
@@ -123,6 +149,166 @@ QVariant unwrapDbusVariant(const QVariant &value)
 } // namespace
 
 #if defined(Q_OS_WIN)
+static QRect virtualScreenGeometry()
+{
+    QRect geometry;
+    const QList<QScreen *> screens = QGuiApplication::screens();
+    for (QScreen *screen : screens)
+    {
+        geometry = geometry.isNull() ? screen->geometry() : geometry.united(screen->geometry());
+    }
+    return geometry;
+}
+
+static QImage grabVirtualDesktop()
+{
+    const QRect desktopGeometry = virtualScreenGeometry();
+    if (desktopGeometry.isNull())
+    {
+        return QImage();
+    }
+
+    QImage desktopImage(desktopGeometry.size(), QImage::Format_ARGB32);
+    desktopImage.fill(Qt::transparent);
+
+    QPainter painter(&desktopImage);
+    const QList<QScreen *> screens = QGuiApplication::screens();
+    for (QScreen *screen : screens)
+    {
+        const QPixmap screenPixmap = screen->grabWindow(0);
+        if (!screenPixmap.isNull())
+        {
+            painter.drawPixmap(screen->geometry().topLeft() - desktopGeometry.topLeft(), screenPixmap);
+        }
+    }
+
+    return desktopImage;
+}
+
+class ScreenRegionSelector : public QWindow
+{
+public:
+    explicit ScreenRegionSelector(const QImage &desktopImage, const QRect &desktopGeometry)
+        : m_desktopImage(desktopImage)
+        , m_backingStore(this)
+    {
+        setFlags(Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::Tool);
+        setGeometry(desktopGeometry);
+        setCursor(Qt::CrossCursor);
+    }
+
+    QRect selectedRect() const
+    {
+        return m_selectedRect.normalized();
+    }
+
+protected:
+    void exposeEvent(QExposeEvent *) override
+    {
+        render();
+    }
+
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        if (event->button() != Qt::LeftButton)
+        {
+            return;
+        }
+
+        m_dragging = true;
+        m_origin = event->pos();
+        m_selectedRect = QRect(m_origin, QSize());
+        render();
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        if (!m_dragging)
+        {
+            return;
+        }
+
+        m_selectedRect = QRect(m_origin, event->pos()).normalized();
+        render();
+    }
+
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        if (event->button() != Qt::LeftButton || !m_dragging)
+        {
+            return;
+        }
+
+        m_dragging = false;
+        m_selectedRect = QRect(m_origin, event->pos()).normalized();
+        close();
+    }
+
+    void keyPressEvent(QKeyEvent *event) override
+    {
+        if (event->key() == Qt::Key_Escape)
+        {
+            m_selectedRect = QRect();
+            close();
+            return;
+        }
+
+        QWindow::keyPressEvent(event);
+    }
+
+private:
+    void render()
+    {
+        if (!isExposed())
+        {
+            return;
+        }
+
+        m_backingStore.resize(size());
+        m_backingStore.beginPaint(QRegion(QRect(QPoint(), size())));
+        QPaintDevice *device = m_backingStore.paintDevice();
+
+        QPainter painter(device);
+        painter.drawImage(QRect(QPoint(), size()), m_desktopImage);
+        painter.fillRect(QRect(QPoint(), size()), QColor(0, 0, 0, 90));
+
+        const QRect selection = selectedRect().intersected(QRect(QPoint(), size()));
+        if (!selection.isNull())
+        {
+            painter.drawImage(selection, m_desktopImage, selection);
+            painter.setPen(QPen(Qt::white, 2));
+            painter.drawRect(selection.adjusted(0, 0, -1, -1));
+        }
+        painter.end();
+
+        m_backingStore.endPaint();
+        m_backingStore.flush(QRegion(QRect(QPoint(), size())), this);
+    }
+
+private:
+    QImage m_desktopImage;
+    QBackingStore m_backingStore;
+    QPoint m_origin;
+    QRect m_selectedRect;
+    bool m_dragging = false;
+};
+
+static QRect selectScreenRegion(const QImage &desktopImage, const QRect &desktopGeometry)
+{
+    ScreenRegionSelector selector(desktopImage, desktopGeometry);
+    QEventLoop loop;
+    QObject::connect(&selector, &QWindow::visibleChanged, &loop, [&selector, &loop](bool visible) {
+        if (!visible)
+        {
+            loop.quit();
+        }
+    });
+    selector.show();
+    selector.requestActivate();
+    loop.exec();
+    return selector.selectedRect();
+}
+
 bool openFolderAndSelectItem(const QString &filePath)
 {
     struct scope {
@@ -317,6 +503,17 @@ QImage OSHelper::screenshotPortal()
 }
 #endif
 
+#if defined(Q_OS_WIN)
+QImage OSHelper::screenshot()
+{
+    const std::unordered_set<QWindow *> hidden = hideVisibleWindows();
+    const auto unhide = sg::make_scope_guard([&hidden]() {
+        showWindows(hidden);
+    });
+
+    return grabVirtualDesktop();
+}
+#else
 QImage OSHelper::screenshot()
 {
     const std::unordered_set<QWindow *> hidden = hideVisibleWindows();
@@ -333,6 +530,7 @@ QImage OSHelper::screenshot()
 
     return QGuiApplication::primaryScreen()->grabWindow(0).toImage();
 }
+#endif
 
 void OSHelper::createDesktopEntry() const
 {
@@ -348,27 +546,59 @@ QString OSHelper::downloadLocation() const
 
 QList<QString> OSHelper::grabQrCodesFromScreen()
 {
-    QList<QString> codes;
-
     try
     {
-        const QImage image = screenshot();
-        if (image.isNull())
-        {
-            return codes;
-        }
-
-        const std::vector<std::string> decoded = QrDecoder().decode(image);
-        std::for_each(decoded.begin(), decoded.end(), [&codes](const std::string &code) {
-            codes.push_back(QString::fromStdString(code));
-        });
+        return decodeQrCodes(screenshot());
     }
     catch (const std::exception &e)
     {
         qWarning() << e.what();
     }
 
-    return codes;
+    return QList<QString>();
+}
+
+QList<QString> OSHelper::grabQrCodesFromScreenRegion()
+{
+#if defined(Q_OS_WIN)
+    try
+    {
+        QImage desktopImage;
+        QRect desktopGeometry;
+        {
+            const std::unordered_set<QWindow *> hidden = hideVisibleWindows();
+            const auto unhide = sg::make_scope_guard([&hidden]() {
+                showWindows(hidden);
+            });
+
+            QCoreApplication::processEvents();
+            desktopGeometry = virtualScreenGeometry();
+            desktopImage = grabVirtualDesktop();
+        }
+
+        if (desktopImage.isNull() || desktopGeometry.isNull())
+        {
+            return QList<QString>();
+        }
+
+        const QRect selection = selectScreenRegion(desktopImage, desktopGeometry)
+            .intersected(QRect(QPoint(), desktopImage.size()));
+        if (selection.isNull() || selection.width() < 2 || selection.height() < 2)
+        {
+            return QList<QString>();
+        }
+
+        return decodeQrCodes(desktopImage.copy(selection));
+    }
+    catch (const std::exception &e)
+    {
+        qWarning() << e.what();
+    }
+
+    return QList<QString>();
+#else
+    return grabQrCodesFromScreen();
+#endif
 }
 
 bool OSHelper::openFile(const QString &filePath) const

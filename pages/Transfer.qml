@@ -186,6 +186,22 @@ Rectangle {
         }
     }
 
+    function loadQrCodeFromCodes(codes) {
+        for (var index = 0; index < codes.length; ++index) {
+            const parsed = walletManager.parse_uri_to_object(codes[index]);
+            if (!parsed.error) {
+                clearFields();
+                fillPaymentObject(parsed);
+                return true;
+            } else if (walletManager.addressValid(codes[index], appWindow.persistentSettings.nettype)) {
+                clearFields();
+                fillPaymentDetails(codes[index], "", "", "", "");
+                return true;
+            }
+        }
+        return false;
+    }
+
     function updateFromQrCode(address, payment_id, amount, tx_description, recipient_name, extra_parameters) {
         console.log("updateFromQrCode")
         fillPaymentObject({
@@ -366,17 +382,15 @@ Rectangle {
                             text: FontAwesome.desktop
                             tooltip: qsTr("Grab QR code from screen") + translationManager.emptyString
                             onClicked: {
-                                clearFields();
-                                const codes = oshelper.grabQrCodesFromScreen();
-                                for (var index = 0; index < codes.length; ++index) {
-                                    const parsed = walletManager.parse_uri_to_object(codes[index]);
-                                    if (!parsed.error) {
-                                        fillPaymentObject(parsed);
-                                        break;
-                                    } else if (walletManager.addressValid(codes[index], appWindow.persistentSettings.nettype)) {
-                                        fillPaymentDetails(codes[index]);
-                                        break;
-                                    }
+                                var loaded = false;
+                                if (isWindows) {
+                                    loaded = loadQrCodeFromCodes(oshelper.grabQrCodesFromScreenRegion());
+                                }
+                                if (!loaded) {
+                                    loaded = loadQrCodeFromCodes(oshelper.grabQrCodesFromScreen());
+                                }
+                                if (!loaded) {
+                                    appWindow.showStatusMessage(qsTr("No valid Monero QR code found.") + translationManager.emptyString, 5);
                                 }
                             }
                         }
