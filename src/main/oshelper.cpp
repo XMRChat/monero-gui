@@ -46,6 +46,7 @@
 #include <QUrl>
 #include <QByteArray>
 #include <QRandomGenerator>
+#include <QSize>
 #ifdef Q_OS_MAC
 #include "qt/macoshelper.h"
 #endif
@@ -117,6 +118,45 @@ QList<QString> decodeQrCodes(const QImage &image)
     std::for_each(decoded.begin(), decoded.end(), [&codes](const std::string &code) {
         codes.push_back(QString::fromStdString(code));
     });
+    return codes;
+}
+
+QList<QString> decodeQrCodesWithUpscaling(const QImage &image)
+{
+    static constexpr int maxUpscaledDimension = 4096;
+
+    QList<QString> codes = decodeQrCodes(image);
+    if (!codes.isEmpty() || image.isNull())
+    {
+        return codes;
+    }
+
+    for (int scale = 2; scale <= 4; ++scale)
+    {
+        const QSize scaledSize(image.width() * scale, image.height() * scale);
+        if (scaledSize.width() > maxUpscaledDimension || scaledSize.height() > maxUpscaledDimension)
+        {
+            break;
+        }
+
+        const QImage scaled = image.scaled(
+            scaledSize,
+            Qt::KeepAspectRatio,
+            Qt::FastTransformation);
+        const QList<QString> scaledCodes = decodeQrCodes(scaled);
+        for (const QString &code : scaledCodes)
+        {
+            if (!codes.contains(code))
+            {
+                codes.push_back(code);
+            }
+        }
+        if (!codes.isEmpty())
+        {
+            break;
+        }
+    }
+
     return codes;
 }
 
@@ -548,7 +588,7 @@ QList<QString> OSHelper::grabQrCodesFromScreen()
 {
     try
     {
-        return decodeQrCodes(screenshot());
+        return decodeQrCodesWithUpscaling(screenshot());
     }
     catch (const std::exception &e)
     {
@@ -588,7 +628,7 @@ QList<QString> OSHelper::grabQrCodesFromScreenRegion()
             return QList<QString>();
         }
 
-        return decodeQrCodes(desktopImage.copy(selection));
+        return decodeQrCodesWithUpscaling(desktopImage.copy(selection));
     }
     catch (const std::exception &e)
     {
