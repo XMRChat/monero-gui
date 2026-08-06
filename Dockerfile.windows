@@ -21,7 +21,8 @@ RUN git clone -b v0.18.5.1 --depth 1 https://github.com/monero-project/monero &&
 
 RUN make -j$THREADS -C /depends HOST=x86_64-w64-mingw32 NO_QT=1
 
-RUN git clone https://code.qt.io/qt/qt5.git -b ${QT_VERSION} --depth 1 && \
+RUN git config --global url.https://github.com/qt/.insteadOf https://code.qt.io/qt/ && \
+    git clone https://github.com/qt/qt5.git -b ${QT_VERSION} --depth 1 && \
     cd qt5 && \
     git reset --hard dc2ac680fa9d0ef7b0d9520859593d13951bedea && \
     git submodule update --init --depth 1 qtbase qtdeclarative qtgraphicaleffects qtimageformats qtmultimedia qtquickcontrols qtquickcontrols2 qtsvg qttools qttranslations && \
