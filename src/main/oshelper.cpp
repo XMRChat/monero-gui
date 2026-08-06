@@ -29,6 +29,7 @@
 #include "oshelper.h"
 
 #include <algorithm>
+#include <cmath>
 #include <unordered_set>
 
 #include <QCoreApplication>
@@ -42,6 +43,7 @@
 #include <QDebug>
 #include <QDesktopServices>
 #include <QFileInfo>
+#include <QPainter>
 #include <QString>
 #include <QUrl>
 #include <QByteArray>
@@ -57,7 +59,6 @@
 #include <QExposeEvent>
 #include <QKeyEvent>
 #include <QMouseEvent>
-#include <QPainter>
 #include <QPen>
 #include <QPixmap>
 #include <QRegion>
@@ -121,6 +122,108 @@ QList<QString> decodeQrCodes(const QImage &image)
     return codes;
 }
 
+void appendUniqueQrCodes(QList<QString> &codes, const QList<QString> &newCodes)
+{
+    for (const QString &code : newCodes)
+    {
+        if (!codes.contains(code))
+        {
+            codes.push_back(code);
+        }
+    }
+}
+
+QImage contrastStretchedGrayscale(const QImage &image)
+{
+    const QImage grayscale = image.convertToFormat(QImage::Format_Grayscale8);
+    if (grayscale.isNull())
+    {
+        return grayscale;
+    }
+
+    int minValue = 255;
+    int maxValue = 0;
+    for (int y = 0; y < grayscale.height(); ++y)
+    {
+        const uchar *line = grayscale.constScanLine(y);
+        for (int x = 0; x < grayscale.width(); ++x)
+        {
+            minValue = std::min(minValue, static_cast<int>(line[x]));
+            maxValue = std::max(maxValue, static_cast<int>(line[x]));
+        }
+    }
+
+    if (maxValue <= minValue)
+    {
+        return grayscale;
+    }
+
+    QImage stretched(grayscale.size(), QImage::Format_Grayscale8);
+    for (int y = 0; y < grayscale.height(); ++y)
+    {
+        const uchar *src = grayscale.constScanLine(y);
+        uchar *dst = stretched.scanLine(y);
+        for (int x = 0; x < grayscale.width(); ++x)
+        {
+            dst[x] = static_cast<uchar>((static_cast<int>(src[x]) - minValue) * 255 / (maxValue - minValue));
+        }
+    }
+
+    return stretched;
+}
+
+QImage thresholdedGrayscale(const QImage &image, bool inverted)
+{
+    const QImage grayscale = image.convertToFormat(QImage::Format_Grayscale8);
+    if (grayscale.isNull())
+    {
+        return grayscale;
+    }
+
+    int minValue = 255;
+    int maxValue = 0;
+    for (int y = 0; y < grayscale.height(); ++y)
+    {
+        const uchar *line = grayscale.constScanLine(y);
+        for (int x = 0; x < grayscale.width(); ++x)
+        {
+            minValue = std::min(minValue, static_cast<int>(line[x]));
+            maxValue = std::max(maxValue, static_cast<int>(line[x]));
+        }
+    }
+
+    const int threshold = (minValue + maxValue) / 2;
+    QImage thresholded(grayscale.size(), QImage::Format_Grayscale8);
+    for (int y = 0; y < grayscale.height(); ++y)
+    {
+        const uchar *src = grayscale.constScanLine(y);
+        uchar *dst = thresholded.scanLine(y);
+        for (int x = 0; x < grayscale.width(); ++x)
+        {
+            const bool white = src[x] > threshold;
+            dst[x] = (white != inverted) ? 255 : 0;
+        }
+    }
+
+    return thresholded;
+}
+
+QImage paddedImage(const QImage &image)
+{
+    if (image.isNull())
+    {
+        return image;
+    }
+
+    const int padding = std::max(8, std::min(image.width(), image.height()) / 20);
+    QImage padded(image.width() + padding * 2, image.height() + padding * 2, image.format());
+    padded.fill(Qt::white);
+
+    QPainter painter(&padded);
+    painter.drawImage(QPoint(padding, padding), image);
+    return padded;
+}
+
 QList<QString> decodeQrCodesWithUpscaling(const QImage &image)
 {
     static constexpr int maxUpscaledDimension = 4096;
@@ -129,6 +232,25 @@ QList<QString> decodeQrCodesWithUpscaling(const QImage &image)
     if (!codes.isEmpty() || image.isNull())
     {
         return codes;
+    }
+
+    if (std::max(image.width(), image.height()) <= maxUpscaledDimension)
+    {
+        const QList<QImage> variants = {
+            paddedImage(image),
+            contrastStretchedGrayscale(image),
+            thresholdedGrayscale(image, false),
+            thresholdedGrayscale(image, true)
+        };
+
+        for (const QImage &variant : variants)
+        {
+            appendUniqueQrCodes(codes, decodeQrCodes(variant));
+            if (!codes.isEmpty())
+            {
+                return codes;
+            }
+        }
     }
 
     for (int scale = 2; scale <= 4; ++scale)
@@ -142,15 +264,8 @@ QList<QString> decodeQrCodesWithUpscaling(const QImage &image)
         const QImage scaled = image.scaled(
             scaledSize,
             Qt::KeepAspectRatio,
-            Qt::FastTransformation);
-        const QList<QString> scaledCodes = decodeQrCodes(scaled);
-        for (const QString &code : scaledCodes)
-        {
-            if (!codes.contains(code))
-            {
-                codes.push_back(code);
-            }
-        }
+            scale == 2 ? Qt::SmoothTransformation : Qt::FastTransformation);
+        appendUniqueQrCodes(codes, decodeQrCodes(scaled));
         if (!codes.isEmpty())
         {
             break;
@@ -208,21 +323,67 @@ static QImage grabVirtualDesktop()
         return QImage();
     }
 
-    QImage desktopImage(desktopGeometry.size(), QImage::Format_ARGB32);
+    qreal imageScale = 1.0;
+    const QList<QScreen *> screens = QGuiApplication::screens();
+    for (QScreen *screen : screens)
+    {
+        const QPixmap screenPixmap = screen->grabWindow(0);
+        if (screenPixmap.isNull())
+        {
+            continue;
+        }
+
+        const QRect screenGeometry = screen->geometry();
+        if (screenGeometry.width() > 0 && screenGeometry.height() > 0)
+        {
+            imageScale = std::max(imageScale, static_cast<qreal>(screenPixmap.width()) / screenGeometry.width());
+            imageScale = std::max(imageScale, static_cast<qreal>(screenPixmap.height()) / screenGeometry.height());
+        }
+    }
+
+    const QSize imageSize(
+        std::max(1, qRound(desktopGeometry.width() * imageScale)),
+        std::max(1, qRound(desktopGeometry.height() * imageScale)));
+    QImage desktopImage(imageSize, QImage::Format_ARGB32);
     desktopImage.fill(Qt::transparent);
 
     QPainter painter(&desktopImage);
-    const QList<QScreen *> screens = QGuiApplication::screens();
     for (QScreen *screen : screens)
     {
         const QPixmap screenPixmap = screen->grabWindow(0);
         if (!screenPixmap.isNull())
         {
-            painter.drawPixmap(screen->geometry().topLeft() - desktopGeometry.topLeft(), screenPixmap);
+            const QImage screenImage = screenPixmap.toImage();
+            const QRect screenGeometry = screen->geometry();
+            const QRectF target(
+                (screenGeometry.x() - desktopGeometry.x()) * imageScale,
+                (screenGeometry.y() - desktopGeometry.y()) * imageScale,
+                screenGeometry.width() * imageScale,
+                screenGeometry.height() * imageScale);
+            painter.drawImage(target, screenImage);
         }
     }
 
     return desktopImage;
+}
+
+static QRect mapSelectionToImage(const QRect &selection, const QRect &desktopGeometry, const QSize &imageSize)
+{
+    if (selection.isNull() || desktopGeometry.isNull() || imageSize.isEmpty())
+    {
+        return QRect();
+    }
+
+    const qreal scaleX = static_cast<qreal>(imageSize.width()) / desktopGeometry.width();
+    const qreal scaleY = static_cast<qreal>(imageSize.height()) / desktopGeometry.height();
+    QRect imageSelection(
+        static_cast<int>(std::floor(selection.x() * scaleX)),
+        static_cast<int>(std::floor(selection.y() * scaleY)),
+        static_cast<int>(std::ceil(selection.width() * scaleX)),
+        static_cast<int>(std::ceil(selection.height() * scaleY)));
+    const int padding = std::max(6, std::min(imageSelection.width(), imageSelection.height()) / 12);
+    imageSelection.adjust(-padding, -padding, padding, padding);
+    return imageSelection.intersected(QRect(QPoint(), imageSize));
 }
 
 class ScreenRegionSelector : public QWindow
@@ -315,7 +476,14 @@ private:
         const QRect selection = selectedRect().intersected(QRect(QPoint(), size()));
         if (!selection.isNull())
         {
-            painter.drawImage(selection, m_desktopImage, selection);
+            const qreal scaleX = static_cast<qreal>(m_desktopImage.width()) / width();
+            const qreal scaleY = static_cast<qreal>(m_desktopImage.height()) / height();
+            const QRectF source(
+                selection.x() * scaleX,
+                selection.y() * scaleY,
+                selection.width() * scaleX,
+                selection.height() * scaleY);
+            painter.drawImage(QRectF(selection), m_desktopImage, source);
             painter.setPen(QPen(Qt::white, 2));
             painter.drawRect(selection.adjusted(0, 0, -1, -1));
         }
@@ -621,8 +789,10 @@ QList<QString> OSHelper::grabQrCodesFromScreenRegion()
             return QList<QString>();
         }
 
-        const QRect selection = selectScreenRegion(desktopImage, desktopGeometry)
-            .intersected(QRect(QPoint(), desktopImage.size()));
+        const QRect selection = mapSelectionToImage(
+            selectScreenRegion(desktopImage, desktopGeometry),
+            desktopGeometry,
+            desktopImage.size());
         if (selection.isNull() || selection.width() < 2 || selection.height() < 2)
         {
             return QList<QString>();
